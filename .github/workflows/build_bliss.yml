@@ -20,7 +20,7 @@ jobs:
             zip curl zlib1g-dev libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev \
             libx11-dev lib32z1-dev python3 python-is-python3 squashfs-tools genisoimage xorriso
           mkdir -p ~/.local/bin
-          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/.local/bin/repo
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > ~/.local/bin/repo
           chmod a+rx ~/.local/bin/repo
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
@@ -29,37 +29,30 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           git config --global user.name "Builder"
           git config --global user.email "builder@example.com"
+          git config --global http.postBuffer 524288000
           mkdir -p ~/blissos && cd ~/blissos
 
-          BRANCH=""
-          for b in arc-11.x r11-x86 q10-x86 main master; do
-            if git ls-remote --heads https://github.com/BlissRoms-x86/manifest.git "refs/heads/$b" | grep -q "$b"; then
-              BRANCH="$b"
-              break
-            fi
-          done
-
-          echo "Using manifest branch: ${BRANCH:-default}"
-          if [ -n "$BRANCH" ]; then
-            repo init -u https://github.com/BlissRoms-x86/manifest.git -b "$BRANCH" --depth=1
-          else
-            repo init -u https://github.com/BlissRoms-x86/manifest.git --depth=1
-          fi
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+          repo init -u https://github.com/BlissRoms-x86/manifest.git -b r11-x86 --depth=1 --no-clone-bundle
+          timeout 40m repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune || true
 
       - name: 4. Nạp Full Firmware & Driver phần cứng Fujitsu Q739
         run: |
           cd ~/blissos
+          if [ ! -d "build" ]; then
+            echo "Mã nguồn tải chưa đủ do hết thời gian chờ của bước sync."
+            exit 1
+          fi
+
           git clone --depth=1 https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git /tmp/linux-firmware
           mkdir -p device/generic/common/firmware
-          cp -rn /tmp/linux-firmware/intel/* device/generic/common/firmware/
-          cp -rn /tmp/linux-firmware/iwlwifi* device/generic/common/firmware/
-          cp -rn /tmp/linux-firmware/i915/* device/generic/common/firmware/
+          cp -rn /tmp/linux-firmware/intel/* device/generic/common/firmware/ 2>/dev/null || true
+          cp -rn /tmp/linux-firmware/iwlwifi* device/generic/common/firmware/ 2>/dev/null || true
+          cp -rn /tmp/linux-firmware/i915/* device/generic/common/firmware/ 2>/dev/null || true
           rm -rf /tmp/linux-firmware
 
           DEFCONFIG=$(find kernel -name "android-x86_64_defconfig" | head -n 1)
           if [ -n "$DEFCONFIG" ]; then
-            cat << 'EOF' >> $DEFCONFIG
+            cat << 'EOF' >> "$DEFCONFIG"
           CONFIG_INTEL_SOC_DPTF=y
           CONFIG_INTEL_POWERCLAMP=y
           CONFIG_X86_INTEL_PSTATE=y
