@@ -1,0 +1,97 @@
+name: Build BlissOS Full Drivers for Fujitsu Q739
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 1. Dọn dẹp ổ cứng máy chủ Cloud
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+
+      - name: 2. Cài đặt công cụ biên dịch
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openjdk-11-jdk git-core gnupg flex bison build-essential \
+            zip curl zlib1g-dev libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev \
+            libx11-dev lib32z1-dev repo python3 squashfs-tools genisoimage xorriso
+
+      - name: 3. Tải mã nguồn Bliss OS (Android 11 - Ổn định nhất cho Intel Gen 8)
+        run: |
+          git config --global user.name "Builder"
+          git config --global user.email "builder@example.com"
+          mkdir -p ~/blissos && cd ~/blissos
+          repo init -u https://github.com/BlissRoms-x86/manifest.git -b arc-legacy --depth=1
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+
+      - name: 4. Nạp Full Firmware & Driver phần cứng Fujitsu Q739
+        run: |
+          cd ~/blissos
+          
+          # Tải kho Firmware gốc mới nhất (Wi-Fi, Bluetooth, GPU UHD 620, Chip âm thanh Intel)
+          git clone --depth=1 https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git /tmp/linux-firmware
+          mkdir -p device/generic/common/firmware
+          cp -rn /tmp/linux-firmware/intel/* device/generic/common/firmware/
+          cp -rn /tmp/linux-firmware/iwlwifi* device/generic/common/firmware/
+          cp -rn /tmp/linux-firmware/i915/* device/generic/common/firmware/
+          rm -rf /tmp/linux-firmware
+
+          # Bật toàn bộ Driver chuyên biệt trong Kernel cho Q739
+          DEFCONFIG="kernel/arch/x86/configs/android-x86_64_defconfig"
+          cat << 'EOF' >> $DEFCONFIG
+          # --- Chống nóng & Bóp hiệu năng CPU Intel Gen 8 ---
+          CONFIG_INTEL_SOC_DPTF=y
+          CONFIG_INTEL_POWERCLAMP=y
+          CONFIG_X86_INTEL_PSTATE=y
+          CONFIG_THERMAL_GOV_POWER_ALLOCATOR=y
+
+          # --- Full Driver Âm thanh & Mic Array (Sửa lỗi Mic rè/không nhận) ---
+          CONFIG_SND_SOC_INTEL_SST=m
+          CONFIG_SND_SOC_SOF_TOPLEVEL=y
+          CONFIG_SND_SOC_SOF_INTEL_TOPLEVEL=y
+          CONFIG_SND_SOC_SOF_INTEL_HDA_COMMON=m
+          CONFIG_SND_SOC_SOF_KABYLAKE=m
+          CONFIG_SND_SOC_SOF_COFFEELAKE=m
+          CONFIG_SND_HDA_CODEC_REALTEK=m
+          CONFIG_SND_HDA_INTEL=m
+
+          # --- Cảm ứng đa điểm & Bút vẽ Wacom Fujitsu ---
+          CONFIG_HID_WACOM=m
+          CONFIG_TOUCHSCREEN_WACOM_W8001=m
+          CONFIG_TOUCHSCREEN_WACOM_I2C=m
+          CONFIG_HID_MULTITOUCH=m
+
+          # --- Nút cứng Tablet, Pin & Cảm biến tự xoay màn hình ---
+          CONFIG_FUJITSU_TABLET=m
+          CONFIG_FUJITSU_LAPTOP=m
+          CONFIG_IIO=y
+          CONFIG_HID_SENSOR_HUB=m
+          CONFIG_HID_SENSOR_ACCEL_3D=m
+          CONFIG_HID_SENSOR_GYRO_3D=m
+          CONFIG_ACPI_BATTERY=y
+          CONFIG_ACPI_BUTTON=y
+
+          # --- Wi-Fi & Bluetooth Intel ---
+          CONFIG_IWLWIFI=m
+          CONFIG_IWLMVM=m
+          CONFIG_BT_INTEL=m
+          CONFIG_BT_HCIBTUSB=m
+          EOF
+
+      - name: 5. Biên dịch ra file cài đặt ISO
+        run: |
+          cd ~/blissos
+          source build/envsetup.sh
+          lunch bliss_x86_64-userdebug
+          mka iso_img -j$(nproc)
+
+      - name: 6. Đóng gói file ISO để tải về
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlissOS-Fujitsu-Q739-FullDriver
+          path: ~/blissos/out/target/product/x86_64/*.iso
+          retention-days: 7
