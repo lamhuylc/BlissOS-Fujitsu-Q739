@@ -18,21 +18,38 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y openjdk-11-jdk git-core gnupg flex bison build-essential \
             zip curl zlib1g-dev libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev \
-            libx11-dev lib32z1-dev repo python3 squashfs-tools genisoimage xorriso
+            libx11-dev lib32z1-dev python3 python-is-python3 squashfs-tools genisoimage xorriso
+          mkdir -p ~/.local/bin
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/.local/bin/repo
+          chmod a+rx ~/.local/bin/repo
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: 3. Tải mã nguồn Bliss OS (Android 11 - Ổn định nhất cho Intel Gen 8)
+      - name: 3. Tải mã nguồn Bliss OS
         run: |
+          export PATH="$HOME/.local/bin:$PATH"
           git config --global user.name "Builder"
           git config --global user.email "builder@example.com"
           mkdir -p ~/blissos && cd ~/blissos
-          repo init -u https://github.com/BlissRoms-x86/manifest.git -b arc-legacy --depth=1
+
+          BRANCH=""
+          for b in arc-11.x r11-x86 q10-x86 main master; do
+            if git ls-remote --heads https://github.com/BlissRoms-x86/manifest.git "refs/heads/$b" | grep -q "$b"; then
+              BRANCH="$b"
+              break
+            fi
+          done
+
+          echo "Using manifest branch: ${BRANCH:-default}"
+          if [ -n "$BRANCH" ]; then
+            repo init -u https://github.com/BlissRoms-x86/manifest.git -b "$BRANCH" --depth=1
+          else
+            repo init -u https://github.com/BlissRoms-x86/manifest.git --depth=1
+          fi
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
       - name: 4. Nạp Full Firmware & Driver phần cứng Fujitsu Q739
         run: |
           cd ~/blissos
-          
-          # Tải kho Firmware gốc mới nhất (Wi-Fi, Bluetooth, GPU UHD 620, Chip âm thanh Intel)
           git clone --depth=1 https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git /tmp/linux-firmware
           mkdir -p device/generic/common/firmware
           cp -rn /tmp/linux-firmware/intel/* device/generic/common/firmware/
@@ -40,16 +57,13 @@ jobs:
           cp -rn /tmp/linux-firmware/i915/* device/generic/common/firmware/
           rm -rf /tmp/linux-firmware
 
-          # Bật toàn bộ Driver chuyên biệt trong Kernel cho Q739
-          DEFCONFIG="kernel/arch/x86/configs/android-x86_64_defconfig"
-          cat << 'EOF' >> $DEFCONFIG
-          # --- Chống nóng & Bóp hiệu năng CPU Intel Gen 8 ---
+          DEFCONFIG=$(find kernel -name "android-x86_64_defconfig" | head -n 1)
+          if [ -n "$DEFCONFIG" ]; then
+            cat << 'EOF' >> $DEFCONFIG
           CONFIG_INTEL_SOC_DPTF=y
           CONFIG_INTEL_POWERCLAMP=y
           CONFIG_X86_INTEL_PSTATE=y
           CONFIG_THERMAL_GOV_POWER_ALLOCATOR=y
-
-          # --- Full Driver Âm thanh & Mic Array (Sửa lỗi Mic rè/không nhận) ---
           CONFIG_SND_SOC_INTEL_SST=m
           CONFIG_SND_SOC_SOF_TOPLEVEL=y
           CONFIG_SND_SOC_SOF_INTEL_TOPLEVEL=y
@@ -58,14 +72,10 @@ jobs:
           CONFIG_SND_SOC_SOF_COFFEELAKE=m
           CONFIG_SND_HDA_CODEC_REALTEK=m
           CONFIG_SND_HDA_INTEL=m
-
-          # --- Cảm ứng đa điểm & Bút vẽ Wacom Fujitsu ---
           CONFIG_HID_WACOM=m
           CONFIG_TOUCHSCREEN_WACOM_W8001=m
           CONFIG_TOUCHSCREEN_WACOM_I2C=m
           CONFIG_HID_MULTITOUCH=m
-
-          # --- Nút cứng Tablet, Pin & Cảm biến tự xoay màn hình ---
           CONFIG_FUJITSU_TABLET=m
           CONFIG_FUJITSU_LAPTOP=m
           CONFIG_IIO=y
@@ -74,13 +84,12 @@ jobs:
           CONFIG_HID_SENSOR_GYRO_3D=m
           CONFIG_ACPI_BATTERY=y
           CONFIG_ACPI_BUTTON=y
-
-          # --- Wi-Fi & Bluetooth Intel ---
           CONFIG_IWLWIFI=m
           CONFIG_IWLMVM=m
           CONFIG_BT_INTEL=m
           CONFIG_BT_HCIBTUSB=m
           EOF
+          fi
 
       - name: 5. Biên dịch ra file cài đặt ISO
         run: |
