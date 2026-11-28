@@ -1,122 +1,124 @@
-name: Remaster Latest BlissOS Pixel-Smooth for Q739
+name: Official Git Build BlissOS for Fujitsu Q739
 
 on:
   workflow_dispatch:
 
 jobs:
-  remaster:
+  build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 350
     steps:
-      - name: 1. Cài đặt công cụ xử lý ISO và SquashFS
+      - name: 1. Giải phóng tối đa dung lượng ổ cứng máy chủ Cloud
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/* /usr/share/swift
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: 2. Cài đặt gói thư viện chuẩn theo tài liệu Bliss OS
         run: |
           sudo apt-get update
-          sudo apt-get install -y p7zip-full squashfs-tools xorriso isolinux genisoimage wget curl git
+          sudo apt-get install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev \
+            libc6-dev-i386 libncurses5 lib32ncurses5-dev x11proto-core-dev libx11-dev \
+            lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig \
+            python3 python-is-python3 squashfs-tools genisoimage xorriso mtools \
+            openjdk-11-jdk ccache rsync bc libssl-dev libelf-dev
+          mkdir -p ~/.local/bin
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > ~/.local/bin/repo
+          chmod a+rx ~/.local/bin/repo
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: 2. Tự động tải bản ISO Bliss OS mới nhất (có GApps & Kernel mới)
+      - name: 3. Khởi tạo & Đồng bộ mã nguồn từ Git chính thức BlissRoms-x86
         run: |
-          mkdir -p ~/work/iso_src ~/work/iso_extract ~/work/squashfs_root ~/work/out
-          cd ~/work/iso_src
-          
-          # Lấy link tải trực tiếp bản Bliss OS x86_64 GApps mới nhất từ SourceForge
-          LATEST_URL=$(curl -sL "https://sourceforge.net/projects/blissos-x86/rss?path=/Official" | \
-            grep -oE 'https://sourceforge.net/projects/blissos-x86/files/Official/[^"]+x86_64[^"]+gapps[^"]+\.iso/download' | \
-            head -n 1)
-          
-          if [ -z "$LATEST_URL" ]; then
-            LATEST_URL=$(curl -sL "https://sourceforge.net/projects/blissos-x86/rss" | \
-              grep -oE 'https://sourceforge.net/projects/blissos-x86/files/[^"]+x86_64[^"]+gapps[^"]+\.iso/download' | \
-              head -n 1)
-          fi
+          export PATH="$HOME/.local/bin:$PATH"
+          git config --global user.name "Builder"
+          git config --global user.email "builder@example.com"
+          git config --global color.ui false
+          mkdir -p ~/blissos && cd ~/blissos
 
-          echo "Downloading: $LATEST_URL"
-          wget -L --user-agent="Mozilla/5.0" -O bliss_base.iso "$LATEST_URL"
-          ls -lh bliss_base.iso
-
-      - name: 3. Tải Full Linux Firmware mới nhất cho Fujitsu Q739
-        run: |
-          git clone --depth=1 https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git ~/work/fw
-          mkdir -p ~/work/q739_fw
-          cp -rn ~/work/fw/intel/* ~/work/q739_fw/ 2>/dev/null || true
-          cp -rn ~/work/fw/iwlwifi* ~/work/q739_fw/ 2>/dev/null || true
-          cp -rn ~/work/fw/i915/* ~/work/q739_fw/ 2>/dev/null || true
-          rm -rf ~/work/fw
-
-      - name: 4. Giải nén ISO, nhúng Driver & Tối ưu mượt kiểu Pixel
-        run: |
-          cd ~/work
-          7z x iso_src/bliss_base.iso -oiso_extract
-          
-          # Tìm và giải nén file system.sfs hoặc system.img
-          if [ -f "iso_extract/system.sfs" ]; then
-            sudo unsquashfs -d squashfs_root iso_extract/system.sfs
-            if [ -f "squashfs_root/system.img" ]; then
-              mkdir -p ~/work/sys_mnt
-              sudo mount -o loop squashfs_root/system.img ~/work/sys_mnt
-              TARGET_SYS="$HOME/work/sys_mnt"
-            else
-              TARGET_SYS="$HOME/work/squashfs_root"
+          # Tự động dò nhánh mới nhất trên kho manifest chính thức của BlissRoms-x86
+          MANIFEST_URL="https://github.com/BlissRoms-x86/manifest.git"
+          BRANCH=""
+          for b in arc-14.x arc-13.x typhoon-x86 arc-12.x arc-11.x r11-x86; do
+            if git ls-remote --heads "$MANIFEST_URL" "refs/heads/$b" | grep -q "$b"; then
+              BRANCH="$b"
+              break
             fi
-          elif [ -f "iso_extract/system.img" ]; then
-            mkdir -p ~/work/sys_mnt
-            sudo mount -o loop iso_extract/system.img ~/work/sys_mnt
-            TARGET_SYS="$HOME/work/sys_mnt"
+          done
+
+          echo "Selected Official Branch: ${BRANCH:-default}"
+          if [ -n "$BRANCH" ]; then
+            repo init -u "$MANIFEST_URL" -b "$BRANCH" --depth=1 --no-clone-bundle
+          else
+            repo init -u "$MANIFEST_URL" --depth=1 --no-clone-bundle
           fi
 
-          # Nhúng toàn bộ firmware Intel/Wi-Fi/Audio SOF vào hệ thống
-          sudo mkdir -p "$TARGET_SYS/system/lib/firmware" "$TARGET_SYS/vendor/firmware"
-          sudo cp -rn ~/work/q739_fw/* "$TARGET_SYS/system/lib/firmware/" 2>/dev/null || true
-          sudo cp -rn ~/work/q739_fw/* "$TARGET_SYS/vendor/firmware/" 2>/dev/null || true
-          sudo chmod -R 644 "$TARGET_SYS/system/lib/firmware/"* "$TARGET_SYS/vendor/firmware/"* 2>/dev/null || true
-          sudo find "$TARGET_SYS/system/lib/firmware" "$TARGET_SYS/vendor/firmware" -type d -exec chmod 755 {} + 2>/dev/null || true
+          # Đồng bộ mã nguồn với số luồng tối ưu tránh nghẽn kết nối
+          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
 
-          # Tinh chỉnh build.prop giúp cảm ứng, hiệu ứng chuyển cảnh và GPU UHD 620 mượt như Pixel
-          BUILD_PROP=$(sudo find "$TARGET_SYS" -maxdepth 3 -name "build.prop" | head -n 1)
-          if [ -n "$BUILD_PROP" ]; then
-            sudo bash -c "cat << 'EOF' >> '$BUILD_PROP'
-
-          # --- Tối ưu hiệu năng & độ mượt Pixel cho Fujitsu Q739 ---
-          debug.sf.hw=1
-          debug.egl.hw=1
-          debug.composition.type=gpu
-          persist.sys.ui.hw=1
-          ro.surface_flinger.vsync_event_phase_offset_ns=2000000
-          ro.surface_flinger.vsync_sf_event_phase_offset_ns=6000000
-          windowsmgr.max_events_per_sec=150
-          ro.min_pointer_dur=8
-          touch.pressure.scale=0.001
-          persist.sys.scrollingcache=3
-          EOF"
-          fi
-
-          # Đóng gói lại system.sfs
-          if mountpoint -q ~/work/sys_mnt; then
-            sudo umount ~/work/sys_mnt
-          fi
-          if [ -f "iso_extract/system.sfs" ]; then
-            sudo rm -f iso_extract/system.sfs
-            sudo mksquashfs squashfs_root iso_extract/system.sfs -comp zstd -Xcompression-level 6
-          fi
-
-      - name: 5. Xuất file ISO hoàn chỉnh (Hỗ trợ chuẩn UEFI của Q739)
+      - name: 4. Nạp Full Linux Firmware & Cấu hình Driver Fujitsu Q739
         run: |
-          cd ~/work
-          xorriso -as mkisofs \
-            -iso-level 3 \
-            -full-iso9660-filenames \
-            -volid "BLISSOS_Q739" \
-            -eltorito-boot isolinux/isolinux.bin \
-            -eltorito-catalog isolinux/boot.cat \
-            -no-emul-boot -boot-load-size 4 -boot-info-table \
-            -eltorito-alt-boot \
-            -e boot/grub/efi.img \
-            -no-emul-boot \
-            -o out/BlissOS-Fujitsu-Q739-PixelSmooth.iso \
-            iso_extract
-          ls -lh out/BlissOS-Fujitsu-Q739-PixelSmooth.iso
+          cd ~/blissos
+          git clone --depth=1 https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git /tmp/linux-firmware
+          mkdir -p device/generic/common/firmware
+          cp -rn /tmp/linux-firmware/intel/* device/generic/common/firmware/ 2>/dev/null || true
+          cp -rn /tmp/linux-firmware/iwlwifi* device/generic/common/firmware/ 2>/dev/null || true
+          cp -rn /tmp/linux-firmware/i915/* device/generic/common/firmware/ 2>/dev/null || true
+          rm -rf /tmp/linux-firmware
 
-      - name: 6. Đưa file ISO lên mục tải về
+          # Bật các module nhân Linux cho Intel Gen 8, Âm thanh SOF, Bút Wacom, Cảm biến Fujitsu
+          for DEFCONFIG in $(find kernel -name "*x86_64*defconfig"); do
+            cat << 'EOF' >> "$DEFCONFIG"
+          CONFIG_INTEL_SOC_DPTF=y
+          CONFIG_INTEL_POWERCLAMP=y
+          CONFIG_X86_INTEL_PSTATE=y
+          CONFIG_THERMAL_GOV_POWER_ALLOCATOR=y
+          CONFIG_SND_SOC_INTEL_SST=m
+          CONFIG_SND_SOC_SOF_TOPLEVEL=y
+          CONFIG_SND_SOC_SOF_INTEL_TOPLEVEL=y
+          CONFIG_SND_SOC_SOF_INTEL_HDA_COMMON=m
+          CONFIG_SND_SOC_SOF_KABYLAKE=m
+          CONFIG_SND_SOC_SOF_COFFEELAKE=m
+          CONFIG_SND_HDA_CODEC_REALTEK=m
+          CONFIG_SND_HDA_INTEL=m
+          CONFIG_HID_WACOM=m
+          CONFIG_TOUCHSCREEN_WACOM_W8001=m
+          CONFIG_TOUCHSCREEN_WACOM_I2C=m
+          CONFIG_HID_MULTITOUCH=m
+          CONFIG_FUJITSU_TABLET=m
+          CONFIG_FUJITSU_LAPTOP=m
+          CONFIG_IIO=y
+          CONFIG_HID_SENSOR_HUB=m
+          CONFIG_HID_SENSOR_ACCEL_3D=m
+          CONFIG_HID_SENSOR_GYRO_3D=m
+          CONFIG_ACPI_BATTERY=y
+          CONFIG_ACPI_BUTTON=y
+          CONFIG_IWLWIFI=m
+          CONFIG_IWLMVM=m
+          CONFIG_BT_INTEL=m
+          CONFIG_BT_HCIBTUSB=m
+          EOF
+          done
+
+      - name: 5. Biên dịch ISO kèm GApps theo script chính thức của Bliss OS
+        run: |
+          cd ~/blissos
+          export USE_CCACHE=1
+          export CCACHE_EXEC=/usr/bin/ccache
+          ccache -M 10G
+          export BLISS_BUILD_VARIANT=gapps
+
+          if [ -f "build-x86.sh" ]; then
+            chmod +x build-x86.sh
+            ./build-x86.sh -g x86_64
+          else
+            source build/envsetup.sh
+            lunch bliss_x86_64-userdebug
+            mka iso_img -j$(nproc)
+          fi
+
+      - name: 6. Đóng gói file ISO thành phẩm
         uses: actions/upload-artifact@v4
         with:
-          name: BlissOS-Q739-PixelSmooth-FullDriver
-          path: ~/work/out/BlissOS-Fujitsu-Q739-PixelSmooth.iso
+          name: BlissOS-OfficialGit-Q739-GApps
+          path: ~/blissos/out/target/product/x86_64/*.iso
           retention-days: 7
